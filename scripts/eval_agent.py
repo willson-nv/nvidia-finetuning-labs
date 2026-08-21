@@ -11,20 +11,39 @@ CALL = re.compile(r"TOOL:\s*([a-z_]+)\((.*?)\)")
 
 
 def render(tok, msgs):
-    """Build the generation prompt with reasoning turned off.
+    """Build the generation prompt, with reasoning turned off, as a dict.
 
-    Hybrid reasoning models (Qwen3 and friends) default to thinking ON, so the
-    model opens with a <think> block and spends the whole --max-new budget
-    reasoning before it ever writes `TOOL: ...`. The scoreboard then reads zero
-    for every column and looks like a training failure when it is a template
-    setting. Models whose template ignores the flag are unaffected.
+    Two version traps in one function.
+
+    Thinking: hybrid reasoning models (Qwen3 and friends) default to thinking
+    ON, so the model opens with a <think> block and spends the whole --max-new
+    budget reasoning before it ever writes `TOOL: ...`. The scoreboard then
+    reads zero in every column and looks like a training failure when it is a
+    template setting. Templates that ignore the flag are unaffected.
+
+    Return type: transformers v5 returns a BatchEncoding from
+    apply_chat_template, where v4 returned a bare tensor of input_ids. Passing
+    a BatchEncoding positionally into generate() dies inside the library with a
+    bare `AttributeError` off `inputs_tensor.shape[0]`, which points nowhere
+    near the actual cause. Asking for return_dict makes the shape explicit, and
+    the fallbacks keep this working on either major.
     """
-    try:
-        return tok.apply_chat_template(msgs, add_generation_prompt=True,
-                                       return_tensors="pt", enable_thinking=False)
-    except TypeError:
-        return tok.apply_chat_template(msgs, add_generation_prompt=True,
-                                       return_tensors="pt")
+    kw = dict(add_generation_prompt=True, tokenize=True, return_tensors="pt")
+    for attempt in (dict(return_dict=True, enable_thinking=False),
+                    dict(return_dict=True),
+                    dict(enable_thinking=False),
+                    dict()):
+        try:
+            enc = tok.apply_chat_template(msgs, **kw, **attempt)
+            break
+        except TypeError:
+            continue
+    else:
+        raise RuntimeError("apply_chat_template rejected every argument combination")
+
+    if hasattr(enc, "keys"):        # BatchEncoding / dict
+        return {k: enc[k] for k in ("input_ids", "attention_mask") if k in enc}
+    return {"input_ids": enc}       # bare tensor
 
 def score(transcript: str) -> dict:
     calls = CALL.findall(transcript)
@@ -58,9 +77,10 @@ def main():
     agg = {"made_a_call": 0, "all_valid": 0, "invented_tool": 0, "escalated": 0}
     for t in tasks:
         prompt = [m for m in t["messages"] if m["role"] in ("system", "user")][:2]
-        ids = render(tok, prompt).to(model.device)
-        out = model.generate(ids, max_new_tokens=a.max_new, do_sample=False)
-        text = tok.decode(out[0][ids.shape[-1]:], skip_special_tokens=True)
+        enc = {k: v.to(model.device) for k, v in render(tok, prompt).items()}
+        n_in = enc["input_ids"].shape[-1]
+        out = model.generate(**enc, max_new_tokens=a.max_new, do_sample=False)
+        text = tok.decode(out[0][n_in:], skip_special_tokens=True)
         for k, v in score(text).items():
             if k in agg and v:
                 agg[k] += 1

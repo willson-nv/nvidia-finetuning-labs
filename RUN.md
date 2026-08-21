@@ -80,6 +80,12 @@ a bare `KeyError: 'qwen3'`.
 >
 > If you swap in a non-reasoning model, the flag is harmless — templates that do not use it
 > ignore it.
+>
+> **⚠️ And ask for `return_dict=True`.** In transformers v5 `apply_chat_template` returns a
+> `BatchEncoding`, where v4 returned a bare tensor. Passing it positionally into
+> `generate()` fails deep inside the library with a naked `AttributeError` on
+> `inputs_tensor.shape[0]` that names nothing useful. Every snippet here uses
+> `return_dict=True` and `generate(**enc, ...)`, which is correct on both majors.
 
 ---
 
@@ -138,9 +144,11 @@ tok = AutoTokenizer.from_pretrained(m)
 model = AutoModelForCausalLM.from_pretrained(m, dtype=torch.bfloat16, device_map='auto')
 msgs = [{'role':'system','content':'You triage support tickets. Reply with JSON only, using exactly the keys severity, team and repeat. severity is one of low, medium, high.'},
         {'role':'user','content':'printer in bay 3 is making a grinding noise again'}]
-ids = tok.apply_chat_template(msgs, add_generation_prompt=True, return_tensors='pt', enable_thinking=False).to(model.device)
-out = model.generate(ids, max_new_tokens=120, do_sample=False)
-print(tok.decode(out[0][ids.shape[-1]:], skip_special_tokens=True))"
+enc = tok.apply_chat_template(msgs, add_generation_prompt=True, tokenize=True,
+                              return_dict=True, return_tensors='pt',
+                              enable_thinking=False).to(model.device)
+out = model.generate(**enc, max_new_tokens=120, do_sample=False)
+print(tok.decode(out[0][enc['input_ids'].shape[-1]:], skip_special_tokens=True))"
 ```
 
 **Expect:** a helpful paragraph, or JSON wrapped in explanation, or invented extra keys.
@@ -245,9 +253,11 @@ model = AutoModelForCausalLM.from_pretrained(m, dtype=torch.bfloat16, device_map
 model = PeftModel.from_pretrained(model, '../checkpoints/demo-a')
 msgs = [{'role':'system','content':'You triage support tickets. Reply with JSON only, using exactly the keys severity, team and repeat. severity is one of low, medium, high.'},
         {'role':'user','content':'printer in bay 3 is making a grinding noise again'}]
-ids = tok.apply_chat_template(msgs, add_generation_prompt=True, return_tensors='pt', enable_thinking=False).to(model.device)
-out = model.generate(ids, max_new_tokens=120, do_sample=False)
-print(tok.decode(out[0][ids.shape[-1]:], skip_special_tokens=True))"
+enc = tok.apply_chat_template(msgs, add_generation_prompt=True, tokenize=True,
+                              return_dict=True, return_tensors='pt',
+                              enable_thinking=False).to(model.device)
+out = model.generate(**enc, max_new_tokens=120, do_sample=False)
+print(tok.decode(out[0][enc['input_ids'].shape[-1]:], skip_special_tokens=True))"
 ```
 
 **Expect:** `{"severity":"medium","team":"facilities","repeat":true}` and nothing else.
