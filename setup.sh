@@ -138,11 +138,46 @@ set -u
 echo "  $(python -V) at $(command -v python)"
 python -m pip install -q --upgrade pip wheel
 
-say "Packages (this is the slow step, ~3-5 min on a cold box)"
+# --- torch, matched to the driver ------------------------------------------
+# CUDA 12 -> 13 was a MAJOR bump, so minor-version compatibility does not cover
+# it: a cu130 wheel needs a 580+ driver and simply reports cuda=False on
+# anything older. Brev's A100 image ships driver 565 (CUDA 12.7), while plain
+# `pip install torch` now resolves to the cu130 build off PyPI — which is why
+# you get a perfectly healthy nvidia-smi next to torch.cuda.is_available()
+# False. Note cu128 is NOT an option here: it was dropped from the 2.13 build
+# matrix, leaving cu126 as the CUDA 12 line.
+say "PyTorch, matched to the driver"
+CUDA_HDR="$(nvidia-smi 2>/dev/null | sed -n 's/.*CUDA Version: *\([0-9][0-9.]*\).*/\1/p' | head -1)"
+CUDA_MAJ="${CUDA_HDR%%.*}"
+echo "  driver advertises CUDA ${CUDA_HDR:-unknown}"
+case "${CUDA_MAJ:-}" in
+  12)    TORCH_IDX="https://download.pytorch.org/whl/cu126" ;;
+  13|14) TORCH_IDX="https://download.pytorch.org/whl/cu130" ;;
+  *)     warn "could not read a CUDA version from nvidia-smi — using the PyPI default"
+         TORCH_IDX="" ;;
+esac
+[ -n "$TORCH_IDX" ] && echo "  using $TORCH_IDX"
+
+need_torch=1
+if python -c "import torch" 2>/dev/null; then
+  HAVE="$(python -c 'import torch; print(torch.version.cuda or "cpu")')"
+  if [ "${HAVE%%.*}" = "${CUDA_MAJ:-}" ]; then
+    need_torch=0
+    echo "  torch already built for CUDA $HAVE — keeping it"
+  else
+    warn "installed torch is built for CUDA $HAVE but the driver is CUDA $CUDA_HDR — reinstalling"
+  fi
+fi
+if [ "$need_torch" = 1 ]; then
+  # shellcheck disable=SC2086
+  pip install -q --force-reinstall ${TORCH_IDX:+--index-url "$TORCH_IDX"} torch
+fi
+
+say "Everything else (this is the slow step, ~3-5 min on a cold box)"
 # transformers >= 4.51 is the floor for the qwen3 architecture; below it you get
 # a bare `KeyError: 'qwen3'`, which is not an obvious error message at 9am.
+# Installed after torch and from PyPI, so the pinned CUDA build is left alone.
 pip install -q \
-  "torch" \
   "transformers>=4.51" \
   "peft" \
   "trl" \
@@ -167,7 +202,15 @@ print(f"  peft          {peft.__version__}")
 print(f"  trl           {trl.__version__}")
 
 if not torch.cuda.is_available():
-    sys.exit("  FAIL: no CUDA device. Everything below would run on CPU for hours.")
+    built = torch.version.cuda or "cpu-only"
+    print(f"\n  FAIL: torch cannot see the GPU. This build targets CUDA {built}.")
+    print("  If nvidia-smi works, the wheel does not match the driver. Reinstall with")
+    print("  the index for the driver's CUDA major version:")
+    print("      pip install --force-reinstall --index-url \\")
+    print("        https://download.pytorch.org/whl/cu126 torch      # driver CUDA 12.x")
+    print("      pip install --force-reinstall --index-url \\")
+    print("        https://download.pytorch.org/whl/cu130 torch      # driver CUDA 13.x")
+    sys.exit(1)
 
 cap = torch.cuda.get_device_capability()
 name = torch.cuda.get_device_name(0)
