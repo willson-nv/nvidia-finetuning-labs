@@ -419,6 +419,12 @@ trap — and lets the model take turns until it stops or hits `--max-turns`.
 ========================================================
 ```
 
+**Read the transcript before you read the table.** The base model calls tools with Python
+keyword syntax — `lookup_ticket_history(ticket_id="T-6478")` — where the harness, and all
+400 training traces, use a bare positional argument. The environment rejects that and says
+so; whether the model *adapts* is the real question, and it is answered in the transcript,
+not in a percentage.
+
 **The metric that carries the demo is `faked the RESULT itself`.** A model that has not
 learned this harness writes `TOOL: ...` *and* the `RESULT: ...` it hopes to get, playing
 both sides of the conversation. The tuned model has seen 400 traces where it calls one

@@ -22,21 +22,45 @@ import argparse, json, re, pathlib
 
 TOOLS = {"lookup_ticket_history", "check_parts_stock", "escalate"}
 CALL = re.compile(r"TOOL:\s*([a-z_]+)\((.*?)\)")
+KWARG = re.compile(r"^\s*[a-z_]+\s*=\s*(.*)$")
 UPPER_ERR = "RESULT: error — ticket id must be upper case"
+
+
+def parse_arg(raw: str):
+    """Pull the value out of one tool argument. Returns (value, used_kwargs).
+
+    The traces call tools positionally — `lookup_ticket_history(T-9454)` — but a
+    base instruct model reaches for Python-style keywords: `ticket_id="T-9454"`.
+    That difference has to be handled explicitly. Matching on the raw argument
+    string means `ticket_id="T-6478"` fails an isupper() test because of the
+    *keyword*, and the environment then reports a casing error for a correctly
+    cased ID — a misdiagnosis the model cannot possibly act on.
+    """
+    used_kwargs = False
+    m = KWARG.match(raw)
+    if m:
+        raw, used_kwargs = m.group(1), True
+    return raw.strip().strip('"').strip("'").strip(), used_kwargs
 
 
 def env_reply(tool: str, args: str) -> str:
     """The deterministic environment the traces were generated against."""
+    if tool not in TOOLS:
+        return "RESULT: error — no such tool"
+    value, used_kwargs = parse_arg(args.split(",")[0])
+    if used_kwargs:
+        # A real failure — the harness parses positional calls — but say so
+        # accurately. An error the model can act on is the whole point.
+        return (f"RESULT: error — pass arguments positionally, as "
+                f"{tool}({value or 'T-1234'})")
     if tool == "lookup_ticket_history":
         # the deliberate trap: 155 of the 400 training traces call this with a
         # lowercase id, get told off, and retry. Recovering is the behaviour
         # Demo D is actually about.
-        return "RESULT: 3 prior reports in 30 days" if args.strip().isupper() else UPPER_ERR
+        return "RESULT: 3 prior reports in 30 days" if value.isupper() else UPPER_ERR
     if tool == "check_parts_stock":
         return "RESULT: 0 in stock, 5 day lead time"
-    if tool == "escalate":
-        return "RESULT: escalated, ref E-8811"
-    return "RESULT: error — no such tool"
+    return "RESULT: escalated, ref E-8811"
 
 
 def render(tok, msgs):
@@ -81,7 +105,7 @@ def trim(text: str):
 def run_episode(model, tok, msgs, max_new, max_turns):
     msgs = list(msgs)
     calls, transcript, hallucinated = [], [], False
-    saw_upper_err = made_lowercase = recovered = False
+    saw_err = made_lowercase = used_kwargs = recovered = looped = False
 
     for _ in range(max_turns):
         enc = {k: v.to(model.device) for k, v in render(tok, msgs).items()}
@@ -100,17 +124,25 @@ def run_episode(model, tok, msgs, max_new, max_turns):
             break                       # a prose answer ends the episode
         tool, args = found[0]
         calls.append((tool, args))
-        if tool == "lookup_ticket_history" and not args.strip().isupper():
+        value, kw = parse_arg(args.split(",")[0])
+        used_kwargs = used_kwargs or kw
+        if tool == "lookup_ticket_history" and not kw and not value.isupper():
             made_lowercase = True
+
         reply = env_reply(tool, args)
-        if reply == UPPER_ERR:
-            saw_upper_err = True
-        elif saw_upper_err and tool == "lookup_ticket_history":
-            recovered = True
+        is_err = reply.startswith("RESULT: error")
+        if saw_err and not is_err:
+            recovered = True            # took the correction and moved on
+        saw_err = saw_err or is_err
         transcript.append(("env", reply))
         msgs.append({"role": "user", "content": reply})
-        if tool == "escalate":
-            continue                    # let it write the closing summary
+
+        # Circuit breaker. Repeating the identical call is a diagnosable failure
+        # in its own right, and letting it run to the turn cap on all 30 tasks
+        # wastes minutes and makes "avg tool calls" meaningless.
+        if len(calls) >= 3 and len(set(calls[-3:])) == 1:
+            looped = True
+            break
 
     names = [c[0] for c in calls]
     return {
@@ -125,7 +157,9 @@ def run_episode(model, tok, msgs, max_new, max_turns):
         "finished":       bool(calls) and transcript[-1][0] == "assistant"
                           and not CALL.search(transcript[-1][1]),
         "lowercase":      made_lowercase,
+        "used_kwargs":    used_kwargs,
         "recovered":      recovered,
+        "looped":         looped,
         "turns":          len(calls),
     }, transcript
 
@@ -153,7 +187,8 @@ def main():
     tasks = [json.loads(l) for l in
              pathlib.Path(a.data).read_text().splitlines() if l.strip()]
     keys = ["made_a_call", "all_valid", "invented_tool", "hallucinated",
-            "checked_stock", "escalated", "finished", "lowercase", "recovered"]
+            "checked_stock", "escalated", "finished", "lowercase",
+            "used_kwargs", "recovered", "looped"]
     agg = {k: 0 for k in keys}
     turns = []
 
@@ -181,8 +216,10 @@ def main():
     print(f"  wrote a closing summary   {agg['finished']:>3}/{n}")
     print(f"  avg tool calls per task   {sum(turns) / max(1, n):>6.1f}")
     print("  " + "-" * 52)
+    print(f"  called with key=value args  {agg['used_kwargs']:>3}/{n}   <-- harness mismatch")
     print(f"  tripped the upper-case rule {agg['lowercase']:>3}/{n}")
-    print(f"    ...and recovered from it  {agg['recovered']:>3}/{n}")
+    print(f"  got an error and moved on   {agg['recovered']:>3}/{n}")
+    print(f"  looped on the same call     {agg['looped']:>3}/{n}   <-- gave up")
     print("=" * 56 + "\n")
 
 
