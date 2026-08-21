@@ -163,32 +163,46 @@ head -n 2 ../data/triage_train.jsonl | python3 -m json.tool --json-lines
 
 ---
 
-### 1.3 Start the training run ⚠️
+### 1.3 Start the training run ✅
 
 ```bash
+mkdir -p ../results
 python3 train_lora.py --model $BASE --out ../checkpoints/demo-a 2>&1 | tee ../results/demo-a.log
 ```
 
-**Expect immediately:**
+**Real output** — A100 80GB, Qwen3-8B, 21 Aug 2026:
 
 ```
-=== LoRA (bf16 base) · rank 16 · 2.0 epochs ===
-```
-
-then a progress bar with a falling `loss`. Loss should drop noticeably in the first
-~20 steps. **Leave it running and go back to the slides** — this is your window for the
-LoRA and QLoRA slides.
-
-**Expect at the end:**
-
-```
+=== LoRA (bf16 base) · rank 16 · 2 epochs ===
+  note: SFTConfig here wants 'warmup_steps', not 'warmup_ratio' — translated
+100%|██████████| 76/76 [01:40<00:00,  1.32s/it]
+{'loss': '2.801', ... 'mean_token_accuracy': '0.6944', 'epoch': '0.1333'}
+{'loss': '0.7235', ... 'mean_token_accuracy': '0.8542', 'epoch': '0.2667'}
+{'loss': '0.155',  ... 'mean_token_accuracy': '0.9357', 'epoch': '0.4'}
+...
+{'loss': '0.0005704', ... 'mean_token_accuracy': '1', 'epoch': '1.987'}
 ====================================================
   LoRA (bf16 base)
-  peak GPU memory       xx.x GB   <-- the Demo B number
-  wall clock            xx.x min
+  peak GPU memory       20.6 GB   <-- the Demo B number
+  wall clock             1.7 min
   adapter written   ../checkpoints/demo-a
 ====================================================
 ```
+
+**76 steps, 93k tokens, 100 seconds.** Do not plan to talk over this — it is finished
+before you have got through a slide. Cover the LoRA and QLoRA slides *first*, then run it
+and let the room watch it complete.
+
+**The loss column is the demo.** 2.80 → 0.72 → 0.16 across the first three log lines, and
+`mean_token_accuracy` hits **1.0 by epoch 1.3** and stays there. Point at that: the task
+was learnable, one epoch would have done, and a curve that pins at 1.0 is what an *easy*
+job looks like. Useful contrast for Demo C, where the reward curve does not saturate.
+
+**A benign warning you will see:** `The tokenizer has new PAD/BOS/EOS tokens that differ
+from the model config ... Updated tokens: {'bos_token_id': None, 'pad_token_id': 151643}`.
+Qwen3 sets `pad` to `<|endoftext|>` and `eos` to `<|im_end|>`; transformers is syncing the
+model config to the tokenizer. Nothing to fix — and it is worth knowing so you do not have
+to react to it on screen.
 
 **If loss is flat:** the chat template probably is not matching. `assistant_only_loss`
 needs `{% generation %}` markers in the template — TRL patches this automatically for known
