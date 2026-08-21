@@ -270,43 +270,61 @@ watching the number move is half the lesson.
 
 ---
 
-### 2.2 Run the identical script with one flag ⚠️
+### 2.2 Run the identical script with one flag ✅
 
 ```bash
 python3 train_lora.py --model $BASE --out ../checkpoints/demo-b --qlora 2>&1 | tee ../results/demo-b.log
 ```
 
-**Expect the header to change and nothing else about the command:**
+**Real output** — A100 80GB, Qwen3-8B, 21 Aug 2026. Only the header and the numbers differ:
 
 ```
-=== QLoRA (4-bit base) · rank 16 · 2.0 epochs ===
+=== QLoRA (4-bit base) · rank 16 · 2 epochs ===
+100%|██████████| 76/76 [02:01<00:00,  1.60s/it]
+{'loss': '2.291', ... 'mean_token_accuracy': '0.7148', 'epoch': '0.1333'}
+...
+{'train_runtime': '121.9', 'train_samples_per_second': '9.842', 'mean_token_accuracy': '1'}
+====================================================
+  QLoRA (4-bit base)
+  peak GPU memory       10.2 GB   <-- the Demo B number
+  wall clock             2.0 min
+  adapter written   ../checkpoints/demo-b
+====================================================
 ```
 
-**Expect at the end:** peak memory **substantially lower** than Demo A, and wall clock
-**slightly higher**.
+**Same 76 steps, same 93k tokens, same final accuracy.** Half the memory, a fifth more time.
 
-**Say the slower part out loud before anyone notices it.** That trade is the honest content
-of this demo.
+**Say the slower part out loud before anyone notices it.** 1.32 s/it became 1.60 s/it —
++21%. That trade is the honest content of this demo, and volunteering it is worth more
+than having someone in the third row point at it.
 
 ---
 
-### 2.3 Print the comparison ⚠️
+### 2.3 Print the comparison ✅
 
 ```bash
 python3 compare.py
 ```
 
-**Expect:**
+**Real output:**
 
 ```
-                        peak GPU   minutes
-LoRA (bf16 base)           xx.x GB      xx.x
-QLoRA (4-bit base)         xx.x GB      xx.x
+                          peak GPU   minutes
+LoRA (bf16 base)            20.6 GB       1.7
+QLoRA (4-bit base)          10.2 GB       2.0
 
-  QLoRA used xx% less memory, and took +x.x min longer.
+  QLoRA used 50% less memory, and took +0.3 min longer.
 ```
 
-**Fill the three boxes on the slide from this.**
+**Fill the three boxes on the slide from this**, then make it concrete: 20.6 GB needs a
+24 GB card and is tight on one; 10.2 GB fits comfortably on a 16 GB card. That is the
+difference between needing an A100 and using the GPU already in a workstation.
+
+**One number to handle carefully.** QLoRA's mean `train_loss` is *lower* (0.196 vs 0.254),
+which looks like QLoRA trained better. It did not — that average is dominated by a faster
+early descent, and both runs finish at ~1e-4 with `mean_token_accuracy` 1.0. Claim
+**indistinguishable**, not better. Correcting a number that flatters you is the kind of
+thing a technical room notices.
 
 ---
 
