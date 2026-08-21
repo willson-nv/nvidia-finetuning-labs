@@ -9,6 +9,46 @@ provider has stock.
 
 ---
 
+## 0. Publish the repo first — everything else depends on it
+
+Both the `--setup-script` URL and the clone inside `setup.sh` fetch from GitHub
+anonymously. The Brev lifecycle script runs under systemd with no terminal, so a
+private repo cannot prompt for credentials — it dies with
+`could not read Username for 'https://github.com'`, which looks like a network
+fault and is not one.
+
+**From your laptop:**
+
+```bash
+cd nvidia-finetuning-labs
+git log --oneline origin/main..HEAD     # anything listed is NOT on GitHub yet
+git push origin main
+```
+
+Then make the repo public: **GitHub → the repo → Settings → General → Danger
+Zone → Change repository visibility → Public.**
+
+**Verify both URLs before you spend money on a GPU:**
+
+```bash
+git ls-remote https://github.com/willson-nv/nvidia-finetuning-labs.git | head -1
+curl -fsSI https://raw.githubusercontent.com/willson-nv/nvidia-finetuning-labs/main/setup.sh | head -1
+```
+
+You want a commit hash from the first and `HTTP/2 200` from the second. A 404 on
+the second means the push has not landed on `main`.
+
+Staying private instead? Everything below still works, but pass a token:
+
+```bash
+GIT_TOKEN=<personal, read-only, throwaway PAT> bash setup.sh
+```
+
+Scope it to this one repo and revoke it when the workshop is over. `setup.sh`
+resets the remote afterwards so the token is not left behind in `.git/config`.
+
+---
+
 ## 1. Install and log in (once, on your laptop)
 
 ```bash
