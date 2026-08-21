@@ -1,0 +1,15 @@
+# Training output. Adapters are ~100 MB each and logs are regenerated every run,
+# so none of it belongs in the repo — but all of it is worth keeping on the box
+# as a fallback if a live run misbehaves.
+checkpoints/
+results/
+
+# Captured by setup.sh from whatever pip actually resolved on the instance.
+# Committed deliberately when you want to freeze a known-good environment.
+!env.lock
+
+__pycache__/
+*.pyc
+.venv/
+venv/
+.DS_Store

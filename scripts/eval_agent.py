@@ -9,6 +9,23 @@ import argparse, json, re, pathlib
 TOOLS = {"lookup_ticket_history", "check_parts_stock", "escalate"}
 CALL = re.compile(r"TOOL:\s*([a-z_]+)\((.*?)\)")
 
+
+def render(tok, msgs):
+    """Build the generation prompt with reasoning turned off.
+
+    Hybrid reasoning models (Qwen3 and friends) default to thinking ON, so the
+    model opens with a <think> block and spends the whole --max-new budget
+    reasoning before it ever writes `TOOL: ...`. The scoreboard then reads zero
+    for every column and looks like a training failure when it is a template
+    setting. Models whose template ignores the flag are unaffected.
+    """
+    try:
+        return tok.apply_chat_template(msgs, add_generation_prompt=True,
+                                       return_tensors="pt", enable_thinking=False)
+    except TypeError:
+        return tok.apply_chat_template(msgs, add_generation_prompt=True,
+                                       return_tensors="pt")
+
 def score(transcript: str) -> dict:
     calls = CALL.findall(transcript)
     valid = [c for c in calls if c[0] in TOOLS]
@@ -41,7 +58,7 @@ def main():
     agg = {"made_a_call": 0, "all_valid": 0, "invented_tool": 0, "escalated": 0}
     for t in tasks:
         prompt = [m for m in t["messages"] if m["role"] in ("system", "user")][:2]
-        ids = tok.apply_chat_template(prompt, add_generation_prompt=True, return_tensors="pt").to(model.device)
+        ids = render(tok, prompt).to(model.device)
         out = model.generate(ids, max_new_tokens=a.max_new, do_sample=False)
         text = tok.decode(out[0][ids.shape[-1]:], skip_special_tokens=True)
         for k, v in score(text).items():

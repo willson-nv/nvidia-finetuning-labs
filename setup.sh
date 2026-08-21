@@ -1,0 +1,188 @@
+#!/usr/bin/env bash
+# Brev setup for the fine-tuning workshop labs.
+#
+#   brev start --name ft-labs --gpu <A100-80GB-instance-type> \
+#     --setup-script https://raw.githubusercontent.com/willson-nv/nvidia-finetuning-labs/main/setup.sh
+#
+# or, once you are already on the box:
+#
+#   curl -fsSL https://raw.githubusercontent.com/willson-nv/nvidia-finetuning-labs/main/setup.sh | bash
+#
+# Safe to re-run. Brev runs setup scripts on every instance start, and a stopped
+# instance loses everything outside /home/ubuntu/workspace, so this script is
+# written to be idempotent and to keep every expensive artefact on the persistent
+# disk: the repo, the virtualenv and the ~16 GB of model weights.
+set -euo pipefail
+
+REPO_URL="https://github.com/willson-nv/nvidia-finetuning-labs.git"
+WORK="${WORK:-/home/ubuntu/workspace}"
+REPO="$WORK/nvidia-finetuning-labs"
+VENV="$WORK/venv"
+BASE_MODEL="${BASE_MODEL:-Qwen/Qwen3-8B}"
+
+say() { printf '\n\033[1;32m==>\033[0m %s\n' "$*"; }
+warn() { printf '\n\033[1;33m!!\033[0m %s\n' "$*"; }
+
+# ---------------------------------------------------------------- 0. the GPU
+say "GPU"
+if ! command -v nvidia-smi >/dev/null 2>&1; then
+  warn "nvidia-smi not found. Nothing below will work on CPU in any useful time."
+  exit 1
+fi
+nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader
+
+# ------------------------------------------------- 1. persistent cache layout
+# Only /home/ubuntu/workspace survives a stop/start. The default HF cache lives
+# in ~/.cache, which does not — so without this you re-download 16 GB every time
+# you resume the instance, which is exactly the wrong thing to discover on the
+# morning of a workshop.
+say "Persistent paths under $WORK"
+mkdir -p "$WORK" "$WORK/hf"
+export HF_HOME="$WORK/hf"
+if ! grep -q 'HF_HOME' ~/.bashrc 2>/dev/null; then
+  {
+    echo ''
+    echo '# fine-tuning workshop — keep the model cache on the persistent disk'
+    echo "export HF_HOME=$WORK/hf"
+    echo "export BASE=$BASE_MODEL"
+    echo "source $VENV/bin/activate"
+  } >> ~/.bashrc
+fi
+echo "HF_HOME=$HF_HOME"
+
+# --------------------------------------------------------------- 2. the repo
+say "Repo"
+if [ -d "$REPO/.git" ]; then
+  git -C "$REPO" pull --ff-only
+else
+  git clone "$REPO_URL" "$REPO"
+fi
+git -C "$REPO" log --oneline -1
+
+# ------------------------------------------------------- 3. python + packages
+say "Virtualenv"
+if [ ! -d "$VENV" ]; then
+  python3 -m venv "$VENV"
+fi
+# shellcheck disable=SC1091
+source "$VENV/bin/activate"
+python -m pip install -q --upgrade pip wheel
+
+say "Packages (this is the slow step, ~3-5 min on a cold box)"
+# transformers >= 4.51 is the floor for the qwen3 architecture; below it you get
+# a bare `KeyError: 'qwen3'`, which is not an obvious error message at 9am.
+pip install -q \
+  "torch" \
+  "transformers>=4.51" \
+  "peft" \
+  "trl" \
+  "datasets" \
+  "accelerate" \
+  "bitsandbytes"
+
+# Record what actually got installed. Pin from this file, not from guesses.
+pip freeze > "$REPO/env.lock"
+echo "wrote $REPO/env.lock"
+
+# ------------------------------------------------------------- 4. preflight
+say "Preflight"
+python - <<'PY'
+import sys
+import torch, transformers, peft, trl
+
+print(f"  python        {sys.version.split()[0]}")
+print(f"  torch         {torch.__version__}   cuda={torch.cuda.is_available()}")
+print(f"  transformers  {transformers.__version__}")
+print(f"  peft          {peft.__version__}")
+print(f"  trl           {trl.__version__}")
+
+if not torch.cuda.is_available():
+    sys.exit("  FAIL: no CUDA device. Everything below would run on CPU for hours.")
+
+cap = torch.cuda.get_device_capability()
+name = torch.cuda.get_device_name(0)
+total = torch.cuda.get_device_properties(0).total_memory / 1e9
+print(f"  gpu           {name}  sm_{cap[0]}{cap[1]}  {total:.0f} GB")
+
+# The QLoRA demo dies here or nowhere. bitsandbytes only compiles sm100/sm120
+# into its CUDA 12.8+ and 13.x wheels; the 11.8-12.6 wheels stop at sm90. On an
+# A100 (sm80) every wheel works, but check anyway so a later GPU switch surfaces
+# now rather than mid-demo.
+import bitsandbytes, torch as t
+print(f"  bitsandbytes  {bitsandbytes.__version__}")
+try:
+    x = t.nn.Linear(64, 64).cuda()
+    from bitsandbytes.nn import Linear4bit
+    q = Linear4bit(64, 64, compute_dtype=t.bfloat16).cuda()
+    _ = q(t.randn(2, 64, device="cuda", dtype=t.float16))
+    print("  4-bit kernel  OK")
+except Exception as e:
+    print(f"  4-bit kernel  FAIL: {e}")
+    print("  --> --qlora (Demo B) will not run on this GPU with this wheel.")
+PY
+
+# --------------------------------------------------- 5. datasets + the model
+say "Datasets"
+cd "$REPO/scripts"
+python make_data.py --out ../data
+
+say "Base model: $BASE_MODEL (~16 GB, cached to $HF_HOME)"
+python - <<PY
+import os
+from transformers import AutoTokenizer, AutoModelForCausalLM
+m = "$BASE_MODEL"
+AutoTokenizer.from_pretrained(m)
+AutoModelForCausalLM.from_pretrained(m)
+print("  cached OK:", m)
+PY
+
+# ------------------------------------------------ 6. the chat-template check
+# Qwen3 is a hybrid thinking model and its template defaults to thinking ON.
+# Left alone, every generation opens with a <think> block, the 256-token budget
+# in eval_agent.py is spent reasoning, and the triage demo never emits clean
+# JSON. Print the rendered prompts so the behaviour is visible before the day
+# rather than inferred from a slide.
+say "Chat template — confirm the <think> handling with your own eyes"
+python - <<PY
+import json
+from transformers import AutoTokenizer
+tok = AutoTokenizer.from_pretrained("$BASE_MODEL")
+row = json.loads(open("../data/triage_train.jsonl").readline())
+msgs = row["messages"]
+
+print("\n--- TRAINING example, as TRL will render it -------------------")
+print(repr(tok.apply_chat_template(msgs, tokenize=False)))
+
+for flag in (True, False):
+    print(f"\n--- GENERATION prompt, enable_thinking={flag} ------------------")
+    print(repr(tok.apply_chat_template(msgs[:-1], add_generation_prompt=True,
+                                       tokenize=False, enable_thinking=flag)))
+print("""
+Read those three. The training render and the enable_thinking=False prompt
+should end the same way. If they do, always pass enable_thinking=False at
+inference and the demo is consistent. If they differ, fix that before the day.
+""")
+PY
+
+# ---------------------------------------------------------------- 7. summary
+say "Ready"
+cat <<EOF
+
+  repo     $REPO
+  venv     $VENV          (auto-activated on your next login)
+  cache    $HF_HOME
+  model    \$BASE = $BASE_MODEL
+
+  Open a fresh shell so ~/.bashrc takes effect, then:
+
+    cd $REPO/scripts
+    python reward.py                       # 12-line grader, no GPU needed
+    python train_lora.py --model \$BASE --out ../checkpoints/demo-a
+
+  Full command-by-command walkthrough: $REPO/RUN.md
+
+  Before you stop this instance, push anything you care about. A stopped Brev
+  instance can fail to restart if the provider is out of A100 capacity, and the
+  data is unreachable until it is not.
+
+EOF

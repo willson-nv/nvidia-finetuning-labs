@@ -46,10 +46,13 @@ take hours instead of minutes.
 
 ### 0.3 Pick and pre-download the base model ⚠️
 
-Pin this **the week of the workshop** — model IDs and library compatibility churn.
+**On Brev, steps 0.1–0.5 are all done for you by `setup.sh` — see BREV.md. Skip to Part 1.**
+
+Pinned model: **`Qwen/Qwen3-8B`** — Apache-2.0, ungated (no HF token to forget), standard
+`q_proj/k_proj/v_proj/o_proj` attention so the LoRA target list in `train_lora.py` is correct.
 
 ```bash
-export BASE=<huggingface-id-of-an-8B-instruct-model>
+export BASE=Qwen/Qwen3-8B
 python3 -c "
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import os; m = os.environ['BASE']
@@ -61,6 +64,22 @@ print('cached OK:', m)"
 
 **Why bother:** so nothing downloads from the podium. A 16 GB pull on conference wifi is
 how demos die.
+
+**Needs `transformers >= 4.51`.** Below that the qwen3 architecture is unknown and you get
+a bare `KeyError: 'qwen3'`.
+
+> **⚠️ Qwen3 thinks by default.** It is a hybrid reasoning model, and
+> `apply_chat_template` defaults to `enable_thinking=True` — so the model opens every reply
+> with a `<think>` block. Reading its own chat template, the training render ends with
+> `<|im_start|>assistant\n<think>\n\n</think>\n\n{JSON}` and the `enable_thinking=False`
+> generation prompt ends the same way, so **pass `enable_thinking=False` at inference and
+> training and generation line up exactly.** Every snippet below already does.
+> `eval_agent.py` does it too — without it the model burns all 256 tokens reasoning, never
+> writes `TOOL: ...`, and the scoreboard reads zero for a reason that has nothing to do with
+> fine-tuning. `setup.sh` prints all three renderings so you can confirm this yourself.
+>
+> If you swap in a non-reasoning model, the flag is harmless — templates that do not use it
+> ignore it.
 
 ---
 
@@ -119,7 +138,7 @@ tok = AutoTokenizer.from_pretrained(m)
 model = AutoModelForCausalLM.from_pretrained(m, dtype=torch.bfloat16, device_map='auto')
 msgs = [{'role':'system','content':'You triage support tickets. Reply with JSON only, using exactly the keys severity, team and repeat. severity is one of low, medium, high.'},
         {'role':'user','content':'printer in bay 3 is making a grinding noise again'}]
-ids = tok.apply_chat_template(msgs, add_generation_prompt=True, return_tensors='pt').to(model.device)
+ids = tok.apply_chat_template(msgs, add_generation_prompt=True, return_tensors='pt', enable_thinking=False).to(model.device)
 out = model.generate(ids, max_new_tokens=120, do_sample=False)
 print(tok.decode(out[0][ids.shape[-1]:], skip_special_tokens=True))"
 ```
@@ -206,7 +225,7 @@ model = AutoModelForCausalLM.from_pretrained(m, dtype=torch.bfloat16, device_map
 model = PeftModel.from_pretrained(model, '../checkpoints/demo-a')
 msgs = [{'role':'system','content':'You triage support tickets. Reply with JSON only, using exactly the keys severity, team and repeat. severity is one of low, medium, high.'},
         {'role':'user','content':'printer in bay 3 is making a grinding noise again'}]
-ids = tok.apply_chat_template(msgs, add_generation_prompt=True, return_tensors='pt').to(model.device)
+ids = tok.apply_chat_template(msgs, add_generation_prompt=True, return_tensors='pt', enable_thinking=False).to(model.device)
 out = model.generate(ids, max_new_tokens=120, do_sample=False)
 print(tok.decode(out[0][ids.shape[-1]:], skip_special_tokens=True))"
 ```
