@@ -393,36 +393,62 @@ sparser than the triage pairs.
 ### 4.2 Score the base model ⚠️
 
 ```bash
-python3 eval_agent.py --model $BASE 2>&1 | tee ../results/agent-before.log
+python3 eval_agent.py --model $BASE --show 1 2>&1 | tee ../results/agent-before.log
 ```
+
+**What this now does:** runs each held-out task as a **full episode**. The script simulates
+the tool results — same rules the traces were generated against, including the upper-case
+trap — and lets the model take turns until it stops or hits `--max-turns`.
 
 **Expect something like:**
 
 ```
-====================================================
-  BEFORE (base)   30 held-out tasks
+========================================================
+  BEFORE (base)   30 held-out episodes
   called a tool at all       xx/30
   every call was valid       xx/30
   invented a tool name       xx/30   <-- lower is better
+  faked the RESULT itself    xx/30   <-- lower is better
+  checked parts stock        xx/30
   reached the escalation     xx/30   <-- the task
-====================================================
+  wrote a closing summary    xx/30
+  avg tool calls per task     x.x
+  ----------------------------------------------------
+  tripped the upper-case rule  xx/30
+    ...and recovered from it   xx/30
+========================================================
 ```
 
-**Expect the "invented a tool name" number to be non-trivial.** That is the failure the
-demo is built around.
+**The metric that carries the demo is `faked the RESULT itself`.** A model that has not
+learned this harness writes `TOOL: ...` *and* the `RESULT: ...` it hopes to get, playing
+both sides of the conversation. The tuned model has seen 400 traces where it calls one
+tool and waits — that is the behaviour being bought.
+
+**Use `--show 1`** to print a transcript. That transcript, not the table, is what to put
+on screen.
 
 ---
 
 ### 4.3 Score the tuned model ⚠️
 
 ```bash
-python3 eval_agent.py --model $BASE --adapter ../checkpoints/demo-d 2>&1 | tee ../results/agent-after.log
+python3 eval_agent.py --model $BASE --adapter ../checkpoints/demo-d --show 1 2>&1 | tee ../results/agent-after.log
 ```
 
-**Expect:** `every call was valid` and `reached the escalation` clearly higher, `invented a
-tool name` near zero.
+**Expect:** `reached the escalation` and `wrote a closing summary` clearly higher, `faked
+the RESULT itself` near zero.
 
-**Show both logs side by side.** That is the scoreboard, and the close of the workshop.
+**Watch `tripped the upper-case rule`.** 155 of the 400 training traces deliberately call
+the tool in lowercase, get an error, and retry. So the tuned model may well *make that
+mistake more often than the base model* — and recover from it. That is not a bug, it is
+what training on traces containing failure actually does, and it is one of the more honest
+things you can show a room: your model learns your data's mistakes as faithfully as its
+successes.
+
+**If before and after come out identical**, check `--max-turns` and re-read the transcript
+before concluding the training failed. An eval that cannot reach the behaviour it is
+scoring will report zero for both models and look like a null result. That is exactly the
+bug the first version of this script had.
 
 ---
 
