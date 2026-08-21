@@ -52,12 +52,59 @@ echo "HF_HOME=$HF_HOME"
 
 # --------------------------------------------------------------- 2. the repo
 say "Repo"
+# Never let git block on a credential prompt. Under Brev's systemd lifecycle
+# there is no tty, so an auth prompt does not appear — it just dies with
+# "could not read Username for 'https://github.com'", which reads like a network
+# fault and is actually "this repo is private".
+export GIT_TERMINAL_PROMPT=0
+
+clone_url() {
+  if [ -n "${GIT_TOKEN:-}" ]; then
+    printf '%s' "$REPO_URL" | sed "s#https://#https://x-access-token:${GIT_TOKEN}@#"
+  else
+    printf '%s' "$REPO_URL"
+  fi
+}
+
 if [ -d "$REPO/.git" ]; then
-  git -C "$REPO" pull --ff-only
+  git -C "$REPO" pull --ff-only || warn "pull failed — carrying on with the checkout already on disk"
+elif [ -f "$REPO/scripts/make_data.py" ]; then
+  # Copied up by hand (scp/rsync) rather than cloned. Perfectly fine.
+  say "Using the existing checkout at $REPO (no git metadata)"
+elif git clone "$(clone_url)" "$REPO" 2>/tmp/clone.err; then
+  # Make sure a token never persists in .git/config.
+  git -C "$REPO" remote set-url origin "$REPO_URL"
 else
-  git clone "$REPO_URL" "$REPO"
+  sed 's/^/    /' /tmp/clone.err >&2
+  cat >&2 <<EOF
+
+  Could not clone $REPO_URL
+
+  Almost always one of two things, and the git message does not distinguish them:
+
+    1. The repo is PRIVATE. Anonymous clone fails. Either make it public, or
+       re-run with a token:
+
+         GIT_TOKEN=<personal, read-only, throwaway PAT> bash setup.sh
+
+       Scope it to this one repo, and revoke it when the workshop is over.
+
+    2. The branch has no setup.sh yet because it was never pushed. Check from
+       your laptop:
+
+         git log --oneline origin/main..HEAD
+
+       Anything listed is not on GitHub, so neither is this script's repo copy.
+
+  Or skip git entirely and copy the folder up from your laptop:
+
+     scp -r nvidia-finetuning-labs ft-labs:$WORK/
+     brev shell ft-labs -c "bash $REPO/setup.sh"
+
+EOF
+  exit 1
 fi
-git -C "$REPO" log --oneline -1
+git -C "$REPO" log --oneline -1 2>/dev/null || true
 
 # ------------------------------------------------------- 3. python + packages
 say "Virtualenv"
