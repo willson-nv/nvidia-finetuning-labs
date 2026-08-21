@@ -14,6 +14,55 @@ Requires: transformers, peft, trl, datasets, accelerate (+ bitsandbytes for --ql
 """
 import argparse, json, time, pathlib
 
+
+def _accepted(cls):
+    import dataclasses, inspect
+    if dataclasses.is_dataclass(cls):
+        return {f.name for f in dataclasses.fields(cls)}
+    return set(inspect.signature(cls.__init__).parameters) - {"self"}
+
+
+# Argument names drift between transformers/TRL majors — transformers v5, for
+# instance, deprecated warmup_ratio in favour of warmup_steps, which now also
+# takes a float < 1 and means the same thing. Pinning versions for a workshop
+# that runs on whatever pip resolved this morning is a losing game, so instead
+# translate what we know and refuse to run quietly on what we do not.
+RENAMES = {
+    "warmup_ratio":        "warmup_steps",
+    "evaluation_strategy": "eval_strategy",
+    "max_seq_length":      "max_length",
+    "max_length":          "max_seq_length",
+}
+
+# Dropping these silently would change what the demo actually demonstrates,
+# so they are fatal rather than a warning.
+LOAD_BEARING = {"assistant_only_loss", "gradient_accumulation_steps", "bf16"}
+
+
+def build_sft_config(SFTConfig, **kw):
+    valid = _accepted(SFTConfig)
+    out, dropped = {}, []
+    for k, v in kw.items():
+        if k in valid:
+            out[k] = v
+        elif k in RENAMES and RENAMES[k] in valid:
+            out[RENAMES[k]] = v
+            print(f"  note: SFTConfig here wants '{RENAMES[k]}', not '{k}' — translated")
+        else:
+            dropped.append(k)
+    fatal = [k for k in dropped if k in LOAD_BEARING]
+    if fatal:
+        raise SystemExit(
+            f"\n  SFTConfig in this TRL build does not accept {fatal}.\n"
+            "  These change what is trained, so continuing would quietly demo\n"
+            "  something other than what the slides claim. Check the TRL release\n"
+            "  notes for the new spelling before the workshop.\n"
+            f"  TRL accepted args: {sorted(valid)}\n")
+    if dropped:
+        print(f"  warning: SFTConfig does not accept {dropped} — dropped (cosmetic only)")
+    return SFTConfig(**out)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", required=True, help="HuggingFace id of an instruct model")
@@ -57,7 +106,8 @@ def main():
     )
     ds = load_dataset("json", data_files=a.data, split="train")
 
-    cfg = SFTConfig(
+    cfg = build_sft_config(
+        SFTConfig,
         output_dir=a.out, num_train_epochs=a.epochs,
         per_device_train_batch_size=a.bs, gradient_accumulation_steps=4,
         learning_rate=2e-4, lr_scheduler_type="cosine", warmup_ratio=0.03,

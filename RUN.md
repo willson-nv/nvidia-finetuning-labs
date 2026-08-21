@@ -190,8 +190,14 @@ LoRA and QLoRA slides.
 ====================================================
 ```
 
-**If loss is flat:** the chat template probably is not matching. Check `assistant_only_loss`
-is supported by your TRL version — if not, remove it and re-run.
+**If loss is flat:** the chat template probably is not matching. `assistant_only_loss`
+needs `{% generation %}` markers in the template — TRL patches this automatically for known
+families including Qwen3, so it should be fine here.
+
+**If it dies on a `SFTConfig ... unexpected keyword argument`:** the script now translates
+the renames it knows about (transformers v5 moved `warmup_ratio` to `warmup_steps`, which
+takes a float < 1). Anything it cannot translate is dropped with a warning, unless dropping
+it would change what is actually trained — then it stops and tells you.
 
 **If you hit OOM:** drop `--bs 2` or `--seq 512`.
 
