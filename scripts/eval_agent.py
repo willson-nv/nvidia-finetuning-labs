@@ -105,6 +105,7 @@ def trim(text: str):
 def run_episode(model, tok, msgs, max_new, max_turns):
     msgs = list(msgs)
     calls, transcript, hallucinated = [], [], False
+    wasted = 0
     saw_err = made_lowercase = used_kwargs = recovered = looped = False
 
     for _ in range(max_turns):
@@ -131,6 +132,7 @@ def run_episode(model, tok, msgs, max_new, max_turns):
 
         reply = env_reply(tool, args)
         is_err = reply.startswith("RESULT: error")
+        wasted += is_err
         if saw_err and not is_err:
             recovered = True            # took the correction and moved on
         saw_err = saw_err or is_err
@@ -161,6 +163,7 @@ def run_episode(model, tok, msgs, max_new, max_turns):
         "recovered":      recovered,
         "looped":         looped,
         "turns":          len(calls),
+        "wasted":         wasted,
     }, transcript
 
 
@@ -190,14 +193,14 @@ def main():
             "checked_stock", "escalated", "finished", "lowercase",
             "used_kwargs", "recovered", "looped"]
     agg = {k: 0 for k in keys}
-    turns = []
+    turns, wasted = [], []
 
     for i, t in enumerate(tasks):
         prompt = [m for m in t["messages"] if m["role"] in ("system", "user")][:2]
         r, transcript = run_episode(model, tok, prompt, a.max_new, a.max_turns)
         for k in keys:
             agg[k] += bool(r[k])
-        turns.append(r["turns"])
+        turns.append(r["turns"]); wasted.append(r["wasted"])
         if i < a.show:
             print(f"\n----- transcript {i + 1} " + "-" * 40)
             for who, line in transcript:
@@ -215,6 +218,7 @@ def main():
     print(f"  reached the escalation    {agg['escalated']:>3}/{n}   <-- the task")
     print(f"  wrote a closing summary   {agg['finished']:>3}/{n}")
     print(f"  avg tool calls per task   {sum(turns) / max(1, n):>6.1f}")
+    print(f"  ...of which wasted on errors {sum(wasted) / max(1, n):>3.1f}   <-- the real cost")
     print("  " + "-" * 52)
     print(f"  called with key=value args  {agg['used_kwargs']:>3}/{n}   <-- harness mismatch")
     print(f"  tripped the upper-case rule {agg['lowercase']:>3}/{n}")
