@@ -45,7 +45,9 @@ if ! grep -q 'HF_HOME' ~/.bashrc 2>/dev/null; then
     echo '# fine-tuning workshop — keep the model cache on the persistent disk'
     echo "export HF_HOME=$WORK/hf"
     echo "export BASE=$BASE_MODEL"
-    echo "source $VENV/bin/activate"
+    # guarded, so a missing or half-built venv does not throw an error into
+    # every new login shell
+    echo "[ -f $VENV/bin/activate ] && source $VENV/bin/activate"
   } >> ~/.bashrc
 fi
 echo "HF_HOME=$HF_HOME"
@@ -108,11 +110,32 @@ git -C "$REPO" log --oneline -1 2>/dev/null || true
 
 # ------------------------------------------------------- 3. python + packages
 say "Virtualenv"
-if [ ! -d "$VENV" ]; then
-  python3 -m venv "$VENV"
+# Test for a working interpreter, not just the directory. A half-built venv —
+# which is what you get when ensurepip is missing, because the tree is created
+# before the failure — would otherwise be silently accepted here and only show
+# up as "No such file or directory" on the activate below.
+if [ ! -x "$VENV/bin/python" ]; then
+  rm -rf "$VENV"
+  if ! python3 -m venv "$VENV" 2>/tmp/venv.err; then
+    sed 's/^/    /' /tmp/venv.err >&2
+    warn "venv creation failed — installing the python venv package and retrying"
+    PYV="$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
+    sudo apt-get update -qq
+    sudo apt-get install -y -qq "python${PYV}-venv" \
+      || sudo apt-get install -y -qq python3-venv
+    rm -rf "$VENV"
+    python3 -m venv "$VENV"
+  fi
 fi
+[ -f "$VENV/bin/activate" ] || { echo "venv still incomplete at $VENV" >&2; exit 1; }
+
+# activate references PS1, which is unset in a non-interactive shell. Under
+# `set -u` that aborts the script, so drop the check just for this line.
+set +u
 # shellcheck disable=SC1091
 source "$VENV/bin/activate"
+set -u
+echo "  $(python -V) at $(command -v python)"
 python -m pip install -q --upgrade pip wheel
 
 say "Packages (this is the slow step, ~3-5 min on a cold box)"
