@@ -86,7 +86,7 @@ a bare `KeyError: 'qwen3'`.
 ### 0.4 Generate the data ✅
 
 ```bash
-cd demo/scripts
+cd nvidia-finetuning-labs/scripts
 python3 make_data.py --out ../data
 ```
 
@@ -100,7 +100,7 @@ writing datasets:
   agent_eval.jsonl            30 rows
 ```
 
-**Already done** — the files are in `demo/data/`. Re-run only if you want different data;
+**Already done** — the files are in `data/`. Re-run only if you want different data;
 the seed is fixed so you will get the same rows back.
 
 ---
@@ -201,7 +201,7 @@ is supported by your TRL version — if not, remove it and re-run.
 
 ```bash
 du -sh ../checkpoints/demo-a
-du -sh ~/.cache/huggingface/hub/models--*/snapshots/*/ | tail -1
+du -sh "${HF_HOME:-$HOME/.cache/huggingface}"/hub/models--*/snapshots/*/ | tail -1
 ```
 
 **Expect:** roughly **100 MB** against roughly **16 GB**.
